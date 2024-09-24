@@ -2,11 +2,9 @@
 Code for the KDD 2021 paper "[Scaling Up Graph Neural Networks Via Graph Coarsening](http://arxiv.org/abs/2106.05150)"
 
 ## Requirements
-* python == 3.7
-* pytorch == 1.5.0
-* torch-geometric == 1.5.0
-* numpy == 1.18.1
-* pygsp == 0.5.1
+
+The Python 3.10 Conda environment used for this project is captured in
+[`conda_requirements.yml`](conda_requirements.yml).
 
 ## Cite
 
