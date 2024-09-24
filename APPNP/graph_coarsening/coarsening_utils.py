@@ -538,7 +538,7 @@ def contract_variation_linear(G, A=None, K=10, r=0.5, mode="neighborhood"):
             return self.cost < other.cost
 
     family = []
-    W_bool = G.A + sp.sparse.eye(G.N, dtype=np.bool, format="csr")
+    W_bool = G.A + sp.sparse.eye(G.N, dtype=np.bool_, format="csr")
     if "neighborhood" in mode:
         for i in range(N):
             # i_set = G.A[i,:].indices # graph_utils.get_neighbors(G, i)
@@ -571,7 +571,7 @@ def contract_variation_linear(G, A=None, K=10, r=0.5, mode="neighborhood"):
                 family.append(CandidateSet(triangle))
 
     family = SortedList(family)
-    marked = np.zeros(G.N, dtype=np.bool)
+    marked = np.zeros(G.N, dtype=np.bool_)
 
     # ----------------------------------------------------------------------------
     # Construct a (minimum weight) independent set.

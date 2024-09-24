@@ -7,6 +7,8 @@ from torch.optim import Adam
 from utils import load_data, coarsening
 import numpy as np
 import os
+from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset', type=str, default='cora')
@@ -56,7 +58,7 @@ for _ in range(args.runs):
     best_val_loss = float('inf')
     val_loss_history = []
 
-    for epoch in range(args.epochs):
+    for epoch in tqdm(range(args.epochs), desc="Training Epochs"):
 
         model.train()
         optimizer.zero_grad()
@@ -85,6 +87,10 @@ for _ in range(args.runs):
     test_acc = int(pred[data.test_mask].eq(data.y[data.test_mask]).sum().item()) / int(data.test_mask.sum())
     print(test_acc)
     all_acc.append(test_acc)
+#plot all_acc 
+plt.figure()
+plt.plot(all_acc)
+plt.savefig('all_acc.png')
 
 print('ave_acc: {:.4f}'.format(np.mean(all_acc)), '+/- {:.4f}'.format(np.std(all_acc)))
 
