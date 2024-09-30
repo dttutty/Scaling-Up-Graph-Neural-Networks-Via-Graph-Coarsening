@@ -6,6 +6,11 @@ Code for the KDD 2021 paper "[Scaling Up Graph Neural Networks Via Graph Coarsen
 The Python 3.10 Conda environment used for this project is captured in
 [`conda_requirements.yml`](conda_requirements.yml).
 
+## Acknowledgments
+
+The graph coarsening utilities in the APPNP and GCN implementations are adapted
+from [loukas/graph-coarsening](https://github.com/loukasa/graph-coarsening).
+
 ## Cite
 
 Please cite our paper if you use this code in your own work:
