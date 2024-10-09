@@ -91,12 +91,12 @@ def real(N, graph_name, connected=True):
 
         elif graph_name == "minnesota":
             G = graphs.Minnesota()
-            W = G.W.astype(np.float)
+            W = G.W.astype(float)
             G = graphs.Graph(W=W[0:N, 0:N], coords=G.coords[0:N, :])
 
         elif graph_name == "bunny":
             G = graphs.Bunny()
-            W = G.W.astype(np.float)
+            W = G.W.astype(float)
             G = graphs.Graph(W=W[0:N, 0:N], coords=G.coords[0:N, :])
 
         if connected == False or G.is_connected():
@@ -109,7 +109,7 @@ def real(N, graph_name, connected=True):
     if not hasattr(G, 'coords'): 
         try:
             import networkx as nx
-            graph = nx.from_scipy_sparse_matrix(G.W)
+            graph = nx.from_scipy_sparse_array(G.W)
             pos = nx.nx_agraph.graphviz_layout(graph, prog='neato')  
             G.set_coordinates(np.array(list(pos.values()))) 
         except ImportError:
@@ -134,7 +134,7 @@ def models(N, graph_name, connected=True, default_params=False, k=12, sigma=0.5)
             offsets = np.array(offsets)
             vals = np.ones_like(offsets)
             W = sp.sparse.diags(
-                vals, offsets, shape=(N, N), format="csc", dtype=np.float
+                vals, offsets, shape=(N, N), format="csc", dtype=float
             )
             W = (W + W.T) / 2
             G = graphs.Graph(W=W)

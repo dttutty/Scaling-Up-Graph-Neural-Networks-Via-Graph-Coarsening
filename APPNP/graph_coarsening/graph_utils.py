@@ -3,7 +3,7 @@ import pygsp as gsp
 
 def to_networkx():
     import networkx as nx
-    return nx.from_scipy_sparse_matrix(G.W)
+    return nx.from_scipy_sparse_array(G.W)
     
 def get_neighbors(G, i):
     return G.A[i,:].indices
@@ -81,7 +81,7 @@ def zero_diag(A):
     import scipy as sp
 
     if sp.sparse.issparse(A):
-        return A - sp.sparse.dia_matrix((A.diagonal()[sp.newaxis, :], [0]), shape=(A.shape[0], A.shape[1]))
+        return A - sp.sparse.dia_matrix((A.diagonal()[np.newaxis, :], [0]), shape=(A.shape[0], A.shape[1]))
     else:
         D = A.diagonal()
         return A - np.diag(D)
