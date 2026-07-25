@@ -1,0 +1,14 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Local Python environments
+.venv/
+
+# Generated PyTorch Geometric datasets
+/dataset/
+APPNP/dataset/*/processed/
+GCN/dataset/*/processed/
+
+# Training checkpoints
+params/
