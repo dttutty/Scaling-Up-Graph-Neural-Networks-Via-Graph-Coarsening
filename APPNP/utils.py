@@ -1,189 +1,237 @@
-from torch_geometric.datasets import Planetoid
+import numpy as np
+import pygsp
 import torch
-from torch_geometric.utils import to_dense_adj
-from graph_coarsening.coarsening_utils import *
-from torch_geometric.datasets import Coauthor
-from torch_geometric.datasets import CitationFull
+from graph_coarsening.coarsening_utils import coarsen
+from pygsp.graphs import Graph
+from torch_geometric.utils import to_scipy_sparse_matrix
 
-def one_hot(x, class_count):
-    return torch.eye(class_count)[x, :]
 
-def extract_components(H):
+def convert_torch_geometric_graph_to_pygsp_graph(graph):
+    adjacency = to_scipy_sparse_matrix(
+        graph.edge_index,
+        num_nodes=graph.num_nodes,
+    )
+    return pygsp.graphs.Graph(adjacency)
 
-        if H.A.shape[0] != H.A.shape[1]:
-            H.logger.error('Inconsistent shape to extract components. '
-                           'Square matrix required.')
-            return None
 
-        if H.is_directed():
-            raise NotImplementedError('Directed graphs not supported yet.')
+def one_hot(labels, class_count):
+    return torch.nn.functional.one_hot(labels, num_classes=class_count).float()
 
-        graphs = []
-        visited = np.zeros(H.A.shape[0], dtype=bool)
 
-        while not visited.all():
-            stack = set([np.nonzero(~visited)[0][0]])
-            comp = []
+def extract_components(graph: Graph):
+    if graph.A.shape[0] != graph.A.shape[1]:
+        raise ValueError("A square adjacency matrix is required.")
+    if graph.is_directed():
+        raise NotImplementedError("Directed graphs are not supported.")
 
-            while len(stack):
-                v = stack.pop()
-                if not visited[v]:
-                    comp.append(v)
-                    visited[v] = True
+    components = []
+    visited = np.zeros(graph.A.shape[0], dtype=bool)
+    while not visited.all():
+        stack = {np.flatnonzero(~visited)[0]}
+        component = []
+        while stack:
+            node = stack.pop()
+            if visited[node]:
+                continue
+            component.append(node)
+            visited[node] = True
+            neighbors = graph.A[node, :].nonzero()[1]
+            stack.update(neighbor for neighbor in neighbors if not visited[neighbor])
 
-                    stack.update(set([idx for idx in H.A[v, :].nonzero()[1]
-                                      if not visited[idx]]))
+        component.sort()
+        subgraph = graph.subgraph(component)
+        subgraph.info = {"orig_idx": component}
+        components.append(subgraph)
+    return components
 
-            comp = sorted(comp)
-            G = H.subgraph(comp)
-            G.info = {'orig_idx': comp}
-            graphs.append(G)
 
-        return graphs
+def coarsen_multiple_subgraphs(dataset, coarsening_ratio, coarsening_method):
+    graph = convert_torch_geometric_graph_to_pygsp_graph(dataset)
+    components = extract_components(graph)
+    print(f"number of subgraphs: {len(components)}")
+    components.sort(key=lambda item: len(item.info["orig_idx"]), reverse=True)
 
-def coarsening(dataset, coarsening_ratio, coarsening_method):
-    if dataset == 'dblp':
-        dataset = CitationFull(root='./dataset', name=dataset)
-    elif dataset == 'Physics':
-        dataset = Coauthor(root='./dataset/Physics', name=dataset)
-    else:
-        dataset = Planetoid(root='./dataset', name=dataset)
-    data = dataset[0]
-    G = gsp.graphs.Graph(W=to_dense_adj(data.edge_index)[0])
-    components = extract_components(G)
-    print('the number of subgraphs is', len(components))
-    candidate = sorted(components, key=lambda x: len(x.info['orig_idx']), reverse=True)
-    number = 0
-    C_list=[]
-    Gc_list=[]
-    while number < len(candidate):
-        H = candidate[number]
-        if len(H.info['orig_idx']) > 10:
-            C, Gc, Call, Gall = coarsen(H, r=coarsening_ratio, method=coarsening_method)
-            C_list.append(C)
-            Gc_list.append(Gc)
-        number += 1
-    return data.x.shape[1], len(set(np.array(data.y))), candidate, C_list, Gc_list
+    coarsening_matrices = []
+    coarsened_subgraphs = []
+    for component in components:
+        if component.N > 10:
+            matrix, coarsened_graph, _, _ = coarsen(
+                component,
+                r=coarsening_ratio,
+                method=coarsening_method,
+            )
+        else:
+            matrix = None
+            coarsened_graph = None
+        coarsening_matrices.append(matrix)
+        coarsened_subgraphs.append(coarsened_graph)
+
+    return components, coarsening_matrices, coarsened_subgraphs
+
 
 def index_to_mask(index, size):
     mask = torch.zeros(size, dtype=torch.bool, device=index.device)
-    mask[index] = 1
+    mask[index] = True
     return mask
 
-def splits(data, num_classes, exp):
-    if exp!='fixed':
-        indices = []
-        for i in range(num_classes):
-            index = (data.y == i).nonzero().view(-1)
-            index = index[torch.randperm(index.size(0))]
-            indices.append(index)
 
-        if exp == 'random':
-            train_index = torch.cat([i[:20] for i in indices], dim=0)
-            val_index = torch.cat([i[20:50] for i in indices], dim=0)
-            test_index = torch.cat([i[50:] for i in indices], dim=0)
-        else:
-            train_index = torch.cat([i[:5] for i in indices], dim=0)
-            val_index = torch.cat([i[5:10] for i in indices], dim=0)
-            test_index = torch.cat([i[10:] for i in indices], dim=0)
+def splits(data, num_classes, split_type):
+    if split_type == "fixed":
+        return data
+    if split_type not in {"random", "few"}:
+        raise ValueError(f"Invalid split type: {split_type!r}.")
 
-        data.train_mask = index_to_mask(train_index, size=data.num_nodes)
-        data.val_mask = index_to_mask(val_index, size=data.num_nodes)
-        data.test_mask = index_to_mask(test_index, size=data.num_nodes)
+    indices = []
+    for class_index in range(num_classes):
+        index = (data.y == class_index).nonzero().view(-1)
+        indices.append(index[torch.randperm(index.size(0))])
 
+    if split_type == "random":
+        train_index = torch.cat([index[:20] for index in indices])
+        val_index = torch.cat([index[20:50] for index in indices])
+        test_index = torch.cat([index[50:] for index in indices])
+    else:
+        train_index = torch.cat([index[:5] for index in indices])
+        val_index = torch.cat([index[5:10] for index in indices])
+        test_index = torch.cat([index[10:] for index in indices])
+
+    data.train_mask = index_to_mask(train_index, data.num_nodes)
+    data.val_mask = index_to_mask(val_index, data.num_nodes)
+    data.test_mask = index_to_mask(test_index, data.num_nodes)
     return data
 
 
-def load_data(dataset, candidate, C_list, Gc_list, exp):
-    if dataset == 'dblp':
-        dataset = CitationFull(root='./dataset', name=dataset)
-    elif dataset == 'Physics':
-        dataset = Coauthor(root='./dataset/Physics', name=dataset)
-    else:
-        dataset = Planetoid(root='./dataset', name=dataset)
-    n_classes = len(set(np.array(dataset[0].y)))
-    data = splits(dataset[0], n_classes, exp)
-    train_mask = data.train_mask
-    val_mask = data.val_mask
-    labels = data.y
-    features = data.x
+def create_new_masks(matrix, train_labels, val_labels):
+    train_projection = matrix.dot(train_labels.numpy())
+    val_projection = matrix.dot(val_labels.numpy())
 
-    coarsen_node = 0
-    number = 0
-    coarsen_row = None
-    coarsen_col = None
-    coarsen_features = torch.Tensor([])
-    coarsen_train_labels = torch.Tensor([])
-    coarsen_train_mask = torch.Tensor([]).bool()
-    coarsen_val_labels = torch.Tensor([])
-    coarsen_val_mask = torch.Tensor([]).bool()
+    new_train_mask = torch.from_numpy(train_projection.sum(axis=1) != 0)
+    train_class_count = torch.from_numpy((train_projection > 0).sum(axis=1))
+    new_train_mask[train_class_count > 1] = False
 
-    while number < len(candidate):
-        H = candidate[number]
-        keep = H.info['orig_idx']
-        H_features = features[keep]
-        H_labels = labels[keep]
-        H_train_mask = train_mask[keep]
-        H_val_mask = val_mask[keep]
-        if len(H.info['orig_idx']) > 10 and torch.sum(H_train_mask)+torch.sum(H_val_mask) > 0:
-            train_labels = one_hot(H_labels, n_classes)
-            train_labels[~H_train_mask] = torch.Tensor([0 for _ in range(n_classes)])
-            val_labels = one_hot(H_labels, n_classes)
-            val_labels[~H_val_mask] = torch.Tensor([0 for _ in range(n_classes)])
+    new_val_mask = torch.from_numpy(val_projection.sum(axis=1) != 0)
+    val_class_count = torch.from_numpy((val_projection > 0).sum(axis=1))
+    new_val_mask[val_class_count > 1] = False
+    return new_train_mask, new_val_mask
 
-            C = C_list[number]
-            Gc = Gc_list[number]
 
-            new_train_mask = torch.BoolTensor(np.sum(C.dot(train_labels), axis=1))
-            mix_label = torch.FloatTensor(C.dot(train_labels))
-            mix_label[mix_label > 0] = 1
-            mix_mask = torch.sum(mix_label, dim=1)
-            new_train_mask[mix_mask > 1] = False
+def update_coarsen_edges(graph, coarsening_state):
+    adjacency = graph.W.tocoo()
+    row = adjacency.row + coarsening_state["coarsen_node"]
+    col = adjacency.col + coarsening_state["coarsen_node"]
+    coarsening_state["coarsen_rows"].append(row)
+    coarsening_state["coarsen_cols"].append(col)
 
-            new_val_mask = torch.BoolTensor(np.sum(C.dot(val_labels), axis=1))
-            mix_label = torch.FloatTensor(C.dot(val_labels))
-            mix_label[mix_label > 0] = 1
-            mix_mask = torch.sum(mix_label, dim=1)
-            new_val_mask[mix_mask > 1] = False
 
-            coarsen_features = torch.cat([coarsen_features, torch.FloatTensor(C.dot(H_features))], dim=0)
-            coarsen_train_labels = torch.cat([coarsen_train_labels, torch.argmax(torch.FloatTensor(C.dot(train_labels)), dim=1).float()], dim=0)
-            coarsen_train_mask = torch.cat([coarsen_train_mask, new_train_mask], dim=0)
-            coarsen_val_labels = torch.cat([coarsen_val_labels, torch.argmax(torch.FloatTensor(C.dot(val_labels)), dim=1).float()], dim=0)
-            coarsen_val_mask = torch.cat([coarsen_val_mask, new_val_mask], dim=0)
+def process_component(
+    subgraph,
+    features,
+    labels,
+    train_mask,
+    val_mask,
+    num_classes,
+    matrix,
+    coarsened_graph,
+    coarsening_state,
+):
+    keep = subgraph.info["orig_idx"]
+    subgraph_features = features[keep]
+    subgraph_labels = labels[keep]
+    subgraph_train_mask = train_mask[keep]
+    subgraph_val_mask = val_mask[keep]
 
-            if coarsen_row is None:
-                coarsen_row = Gc.W.tocoo().row
-                coarsen_col = Gc.W.tocoo().col
-            else:
-                current_row = Gc.W.tocoo().row + coarsen_node
-                current_col = Gc.W.tocoo().col + coarsen_node
-                coarsen_row = np.concatenate([coarsen_row, current_row], axis=0)
-                coarsen_col = np.concatenate([coarsen_col, current_col], axis=0)
-            coarsen_node += Gc.W.shape[0]
+    if not (subgraph_train_mask.any() or subgraph_val_mask.any()):
+        return
 
-        elif torch.sum(H_train_mask)+torch.sum(H_val_mask)>0:
+    if matrix is not None:
+        train_labels = one_hot(subgraph_labels, num_classes)
+        train_labels[~subgraph_train_mask] = 0
+        val_labels = one_hot(subgraph_labels, num_classes)
+        val_labels[~subgraph_val_mask] = 0
+        new_train_mask, new_val_mask = create_new_masks(
+            matrix, train_labels, val_labels
+        )
 
-            coarsen_features = torch.cat([coarsen_features, H_features], dim=0)
-            coarsen_train_labels = torch.cat([coarsen_train_labels, H_labels.float()], dim=0)
-            coarsen_train_mask = torch.cat([coarsen_train_mask, H_train_mask], dim=0)
-            coarsen_val_labels = torch.cat([coarsen_val_labels, H_labels.float()], dim=0)
-            coarsen_val_mask = torch.cat([coarsen_val_mask, H_val_mask], dim=0)
+        projected_features = torch.from_numpy(matrix.dot(subgraph_features.numpy())).to(
+            dtype=features.dtype
+        )
+        projected_train_labels = torch.from_numpy(
+            matrix.dot(train_labels.numpy())
+        ).argmax(dim=1)
+        projected_val_labels = torch.from_numpy(matrix.dot(val_labels.numpy())).argmax(
+            dim=1
+        )
 
-            if coarsen_row is None:
-                raise Exception('The graph does not need coarsening.')
-            else:
-                current_row = H.W.tocoo().row + coarsen_node
-                current_col = H.W.tocoo().col + coarsen_node
-                coarsen_row = np.concatenate([coarsen_row, current_row], axis=0)
-                coarsen_col = np.concatenate([coarsen_col, current_col], axis=0)
-            coarsen_node += H.W.shape[0]
-        number += 1
+        coarsening_state["features"].append(projected_features)
+        coarsening_state["train_labels"].append(projected_train_labels)
+        coarsening_state["train_masks"].append(new_train_mask)
+        coarsening_state["val_labels"].append(projected_val_labels)
+        coarsening_state["val_masks"].append(new_val_mask)
+        update_coarsen_edges(coarsened_graph, coarsening_state)
+        coarsening_state["coarsen_node"] += coarsened_graph.N
+        return
 
-    print('the size of coarsen graph features:', coarsen_features.shape)
+    coarsening_state["features"].append(subgraph_features)
+    coarsening_state["train_labels"].append(subgraph_labels)
+    coarsening_state["train_masks"].append(subgraph_train_mask)
+    coarsening_state["val_labels"].append(subgraph_labels)
+    coarsening_state["val_masks"].append(subgraph_val_mask)
+    update_coarsen_edges(subgraph, coarsening_state)
+    coarsening_state["coarsen_node"] += subgraph.N
 
-    coarsen_edge = torch.LongTensor([coarsen_row, coarsen_col])
-    coarsen_train_labels = coarsen_train_labels.long()
-    coarsen_val_labels = coarsen_val_labels.long()
 
-    return data, coarsen_features, coarsen_train_labels, coarsen_train_mask, coarsen_val_labels, coarsen_val_mask, coarsen_edge
+def load_and_coarsen(dataset, subgraphs, matrices, coarsened_subgraphs, split_type):
+    num_classes = int(dataset.y.max().item()) + 1
+    data = splits(dataset, num_classes, split_type)
+    coarsening_state = {
+        "coarsen_node": 0,
+        "coarsen_rows": [],
+        "coarsen_cols": [],
+        "features": [],
+        "train_labels": [],
+        "train_masks": [],
+        "val_labels": [],
+        "val_masks": [],
+    }
+
+    for subgraph, matrix, coarsened_graph in zip(
+        subgraphs,
+        matrices,
+        coarsened_subgraphs,
+        strict=True,
+    ):
+        process_component(
+            subgraph,
+            data.x,
+            data.y,
+            data.train_mask,
+            data.val_mask,
+            num_classes,
+            matrix,
+            coarsened_graph,
+            coarsening_state,
+        )
+
+    if not coarsening_state["features"]:
+        raise ValueError("No component contains training or validation nodes.")
+
+    coarsen_features = torch.cat(coarsening_state["features"])
+    coarsen_edge = torch.from_numpy(
+        np.vstack(
+            (
+                np.concatenate(coarsening_state["coarsen_rows"]),
+                np.concatenate(coarsening_state["coarsen_cols"]),
+            )
+        )
+    ).long()
+    print(f"coarsened feature shape: {tuple(coarsen_features.shape)}")
+
+    return (
+        data,
+        coarsen_features,
+        torch.cat(coarsening_state["train_labels"]).long(),
+        torch.cat(coarsening_state["train_masks"]),
+        torch.cat(coarsening_state["val_labels"]).long(),
+        torch.cat(coarsening_state["val_masks"]),
+        coarsen_edge,
+    )
